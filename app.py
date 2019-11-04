@@ -133,8 +133,8 @@ num_sampled = 64 # 要抽样的负面例子数量。
 valid_size = 12500
 
 x_train, y_train = generate_batch(vocabulary_size + valid_size,num_skips,skip_window)
-
-print("\033[0;32mx_train shape:\033[0m",np.shape(x_train),"\n\033[0;32mx_train_1\033[0m",x_train[0])
+y_train = tf.one_hot(y_train,vocabulary_size).numpy()
+print("\033[0;32mx_train shape:\033[0m",np.shape(x_train),"\n\033[0;32my_train shape:\033[0m",np.shape(y_train))
 
 # 自定义embedding层
 class LookupEmbedding(layers.Layer):
@@ -154,11 +154,22 @@ class LookupEmbedding(layers.Layer):
     def compute_output_shape(self,input_shape):
         return (self.input_dim,self.output_dim)
 
+# 自定义loss函数
+def categorical_crossentropy(y_true, y_pred):
+    #Y_true = tf.one_hot(tf.dtypes.cast(y_true,dtype=tf.int32),vocabulary_size)
+    #print("\033[0;33my_true:\n",y_true,"\ny_pred:\n",y_pred)
+    matmul = tf.linalg.matmul(y_true,tf.math.log(y_pred),transpose_b=True)
+    return -tf.math.reduce_mean(matmul)
+
+# 自定义metrics函数
+# def accuracy(y_true, y_pred):
+    
+
 model = keras.Sequential()
 model.add(LookupEmbedding(vocabulary_size,embedding_size))
 model.add(layers.Dense(vocabulary_size,activation='softmax'))
 #model.summary()
-model.compile(optimizer='adam',loss='binary_crossentropy',metrics=['accuracy'])
+model.compile(optimizer='adam',loss=categorical_crossentropy,metrics=['accuracy'])
 history = model.fit(x=x_train,y=y_train,batch_size=batch_size,epochs=10,validation_split=0.2,validation_data=None,validation_steps=20)
 
 e = model.layers[0]
