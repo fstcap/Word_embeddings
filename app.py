@@ -82,9 +82,8 @@ def build_dataset(words, n_words):
 data, count, dictionary, reverse_dictionary = build_dataset(vocabulary,vocabulary_size)
 del vocabulary #减少记忆内存
 
-data_index = 0
-
 #Step 3: 用于为skip-gram模型生成训练批次的函数。
+data_index = 0
 def generate_batch(batch_size,num_skips,skip_window):
     global data_index
     assert batch_size % num_skips == 0
@@ -131,10 +130,27 @@ num_sampled = 64 # 要抽样的负面例子数量。
 这3个变量仅用于显示模型精度，它们不影响计算。
 """
 valid_size = 12500
-
-x_train, y_train = generate_batch(vocabulary_size + valid_size,num_skips,skip_window)
+x_train, y_train = generate_batch(vocabulary_size+valid_size,num_skips,skip_window)
 y_train = tf.one_hot(y_train,vocabulary_size).numpy()
+
+count = -1
+def one_hot_generator():
+    global count
+    while True:
+        count += 1
+        start_index = batch_size*count
+        end_index = batch_size*(count+1)
+        X_train = x_train[start_index,end_index]
+        Y_train = y_train[start_index,end_index])
+        yield(X_train,Y_train)
+
 print("\033[0;32mx_train shape:\033[0m",np.shape(x_train),"\n\033[0;32my_train shape:\033[0m",np.shape(y_train))
+test_arr = tf.random.uniform(
+                shape=(3,3),
+                minval=-1.0,
+                maxval=1.0)
+tfsum = tf.math.sqrt(tf.math.reduce_sum(input_tensor=tf.square(test_arr), axis=1, keepdims=True))
+print("\033[0;32mtest_arr:\033[0m\n",test_arr,"\ntfsum:\n",(test_arr/tfsum).numpy())
 
 # 自定义embedding层
 class LookupEmbedding(layers.Layer):
@@ -160,20 +176,20 @@ def categorical_crossentropy(y_true, y_pred):
     #print("\033[0;33my_true:\n",y_true,"\ny_pred:\n",y_pred)
     matmul = tf.linalg.matmul(y_true,tf.math.log(y_pred),transpose_b=True)
     return -tf.math.reduce_mean(matmul)
-
-# 自定义metrics函数
-# def accuracy(y_true, y_pred):
+# def binary_crossentropy(y_true, y_pred):
     
+# 自定义metrics函数
+# def accuracy(y_true, y_pred): 
 
 model = keras.Sequential()
 model.add(LookupEmbedding(vocabulary_size,embedding_size))
 model.add(layers.Dense(vocabulary_size,activation='softmax'))
 #model.summary()
 model.compile(optimizer='adam',loss=categorical_crossentropy,metrics=['accuracy'])
-history = model.fit(x=x_train,y=y_train,batch_size=batch_size,epochs=10,validation_split=0.2,validation_data=None,validation_steps=20)
+history = model.fit_generator(generator = one_hot_generator(),steps_per_epoch=vocabulary_size//batch_size,epochs=10)
 
-e = model.layers[0]
-weights = e.get_weights()[0]
+emb_layer = model.layers[0]
+weights = emb_layer.get_weights()[0]
 
 # 为embeddings编写相应的标签。
 with open(os.path.join(FLAGS.output,'meta.tsv'), 'w') as f:
@@ -183,4 +199,3 @@ with open(os.path.join(FLAGS.output,'meta.tsv'), 'w') as f:
 with open(os.path.join(FLAGS.output,'vecs.tsv'), 'w') as f:
     for value in weights:
         f.write('\t'.join([str(x) for x in value]) + "\n")
-
