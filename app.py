@@ -12,9 +12,10 @@ import tensorflow as tf
 
 from tensorflow import keras
 from tensorflow.keras import layers
+from tensorflow.keras.callbacks import TensorBoard
 
-rightnow = time.strftime("%Y%m%d-%H:%M:%S", time.localtime())
-print('rightnow', rightnow)
+start_time = time.strftime("%Y%m%d-%H:%M:%S", time.localtime())
+print('start_time', start_time)
 
 current_path = os.path.dirname(os.path.realpath(sys.argv[0]))
 parser = argparse.ArgumentParser()
@@ -129,28 +130,19 @@ num_sampled = 64 # 要抽样的负面例子数量。
 在这里，我们将验证样本限制为具有低数字ID的单词，按构造也是最常见的。
 这3个变量仅用于显示模型精度，它们不影响计算。
 """
-valid_size = 12500
-x_train, y_train = generate_batch(vocabulary_size+valid_size,num_skips,skip_window)
-y_train = tf.one_hot(y_train,vocabulary_size).numpy()
 
-count = -1
 def one_hot_generator():
-    global count
     while True:
-        count += 1
-        start_index = batch_size*count
-        end_index = batch_size*(count+1)
-        X_train = x_train[start_index,end_index]
-        Y_train = y_train[start_index,end_index])
-        yield(X_train,Y_train)
-
-print("\033[0;32mx_train shape:\033[0m",np.shape(x_train),"\n\033[0;32my_train shape:\033[0m",np.shape(y_train))
-test_arr = tf.random.uniform(
-                shape=(3,3),
-                minval=-1.0,
-                maxval=1.0)
-tfsum = tf.math.sqrt(tf.math.reduce_sum(input_tensor=tf.square(test_arr), axis=1, keepdims=True))
-print("\033[0;32mtest_arr:\033[0m\n",test_arr,"\ntfsum:\n",(test_arr/tfsum).numpy())
+        x_train, y_train = generate_batch(batch_size,num_skips,skip_window)
+        '''
+        for i in range(4):
+            print("\033[0;33m",x_train[i], 
+                reverse_dictionary[x_train[i]],
+                "\033[0m", '->',y_train[i,0], 
+                reverse_dictionary[y_train[i,0]])
+        '''
+        y_train = tf.one_hot(y_train,vocabulary_size).numpy() 
+        yield(x_train,y_train)
 
 # 自定义embedding层
 class LookupEmbedding(layers.Layer):
@@ -169,6 +161,11 @@ class LookupEmbedding(layers.Layer):
         return tf.nn.embedding_lookup(params=self.kernel,ids=x)
     def compute_output_shape(self,input_shape):
         return (self.input_dim,self.output_dim)
+    def get_config(self):
+        config = {
+            'activation': activations.serialize(self.activation)}
+        base_config = super(Activation, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
 
 # 自定义loss函数
 def categorical_crossentropy(y_true, y_pred):
@@ -184,9 +181,20 @@ def categorical_crossentropy(y_true, y_pred):
 model = keras.Sequential()
 model.add(LookupEmbedding(vocabulary_size,embedding_size))
 model.add(layers.Dense(vocabulary_size,activation='softmax'))
-#model.summary()
 model.compile(optimizer='adam',loss=categorical_crossentropy,metrics=['accuracy'])
-history = model.fit_generator(generator = one_hot_generator(),steps_per_epoch=vocabulary_size//batch_size,epochs=10)
+
+tensorboard = TensorBoard(
+    log_dir=os.path.join(FLAGS.log_dir,f"{start_time}"),
+    histogram_freq=1,
+    write_graph=True,
+    write_images=True)
+history = model.fit_generator(
+    generator = one_hot_generator(),
+    steps_per_epoch=batch_size,
+    epochs=vocabulary_size//batch_size,
+    callbacks=[tensorboard])
+
+model.summary()
 
 emb_layer = model.layers[0]
 weights = emb_layer.get_weights()[0]
