@@ -12,6 +12,7 @@ import tensorflow as tf
 
 from tensorflow import keras
 from tensorflow.keras import layers
+
 from tensorflow.keras.callbacks import TensorBoard
 
 start_time = time.strftime("%Y%m%d-%H:%M:%S", time.localtime())
@@ -146,24 +147,34 @@ def one_hot_generator():
 
 # 自定义embedding层
 class LookupEmbedding(layers.Layer):
+    
     def __init__(self,input_dim,output_dim,**kwargs):
+        kwargs['input_shape'] = (input_dim,1)
         super(LookupEmbedding,self).__init__(**kwargs)
         self.input_dim = input_dim
         self.output_dim = output_dim
-    def build(self,input_shape): 
+        self.activation = tf.nn.relu
+    
+    def build(self,input_shape):
+        print("\033[0;32minput_shape:\033[0m",input_shape)
         self.kernel = tf.Variable(
             tf.random.uniform(
                 shape=(self.input_dim,self.output_dim),
                 minval=-1.0,
                 maxval=1.0))
-        super(LookupEmbedding,self).build((self.input_dim,self.output_dim))
+        # super(LookupEmbedding,self).build((self.input_dim,self.output_dim))
+    
     def call(self,x):
-        return tf.nn.embedding_lookup(params=self.kernel,ids=x)
+        print("\033[0;32mx_train:\033[0m",x_train)
+        embedding = tf.nn.embedding_lookup(params=self.kernel,ids=x) 
+        return self.activation(features=embedding)
+    
     def compute_output_shape(self,input_shape):
         return (self.input_dim,self.output_dim)
+    
     def get_config(self):
         config = {
-            'activation': activations.serialize(self.activation)}
+            'activation': self.activation}
         base_config = super(Activation, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
 
@@ -179,22 +190,23 @@ def categorical_crossentropy(y_true, y_pred):
 # def accuracy(y_true, y_pred): 
 
 model = keras.Sequential()
+
 model.add(LookupEmbedding(vocabulary_size,embedding_size))
 model.add(layers.Dense(vocabulary_size,activation='softmax'))
 model.compile(optimizer='adam',loss=categorical_crossentropy,metrics=['accuracy'])
+model.summary()
 
 tensorboard = TensorBoard(
     log_dir=os.path.join(FLAGS.log_dir,f"{start_time}"),
     histogram_freq=1,
     write_graph=True,
     write_images=True)
+
 history = model.fit_generator(
     generator = one_hot_generator(),
     steps_per_epoch=batch_size,
     epochs=vocabulary_size//batch_size,
     callbacks=[tensorboard])
-
-model.summary()
 
 emb_layer = model.layers[0]
 weights = emb_layer.get_weights()[0]
