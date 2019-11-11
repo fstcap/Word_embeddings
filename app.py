@@ -131,6 +131,9 @@ num_sampled = 64 # 要抽样的负面例子数量。
 在这里，我们将验证样本限制为具有低数字ID的单词，按构造也是最常见的。
 这3个变量仅用于显示模型精度，它们不影响计算。
 """
+valid_window = 200 # 只选择分布头部的开发样本。
+x_valid, y_valid = generate_batch(valid_window,num_skips,skip_window)
+data_index = 0
 
 def one_hot_generator():
     while True:
@@ -142,21 +145,19 @@ def one_hot_generator():
                 "\033[0m", '->',y_train[i,0], 
                 reverse_dictionary[y_train[i,0]])
         '''
-        y_train = tf.one_hot(y_train,vocabulary_size).numpy() 
+        # y_train = tf.one_hot(Y_train,vocabulary_size).numpy() 
         yield(x_train,y_train)
 
 # 自定义embedding层
 class LookupEmbedding(layers.Layer):
     
     def __init__(self,input_dim,output_dim,**kwargs):
-        kwargs['input_shape'] = (input_dim,1)
         super(LookupEmbedding,self).__init__(**kwargs)
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.activation = tf.nn.relu
     
     def build(self,input_shape):
-        print("\033[0;32minput_shape:\033[0m",input_shape)
         self.kernel = tf.Variable(
             tf.random.uniform(
                 shape=(self.input_dim,self.output_dim),
@@ -165,7 +166,8 @@ class LookupEmbedding(layers.Layer):
         # super(LookupEmbedding,self).build((self.input_dim,self.output_dim))
     
     def call(self,x):
-        print("\033[0;32mx_train:\033[0m",x_train)
+        x = tf.dtypes.cast(x,dtype=tf.int32)
+        #print("\n\033[0;32mx_shape:\033[0m",tf.shape(x),"\n\033[0;32mdata_index:\033[0m",data_index)
         embedding = tf.nn.embedding_lookup(params=self.kernel,ids=x) 
         return self.activation(features=embedding)
     
@@ -180,20 +182,21 @@ class LookupEmbedding(layers.Layer):
 
 # 自定义loss函数
 def categorical_crossentropy(y_true, y_pred):
-    #Y_true = tf.one_hot(tf.dtypes.cast(y_true,dtype=tf.int32),vocabulary_size)
-    #print("\033[0;33my_true:\n",y_true,"\ny_pred:\n",y_pred)
-    matmul = tf.linalg.matmul(y_true,tf.math.log(y_pred),transpose_b=True)
+    Y_true = tf.one_hot(tf.dtypes.cast(y_true,dtype=tf.int32),vocabulary_size)
+    print("\033[0;33mY_true:\n",tf.shape(Y_true),"\ny_pred:\n",tf.shape(y_pred))
+    matmul = tf.linalg.matmul(Y_true,tf.math.log(y_pred),transpose_b=True)
     return -tf.math.reduce_mean(matmul)
-# def binary_crossentropy(y_true, y_pred):
     
-# 自定义metrics函数
-# def accuracy(y_true, y_pred): 
+# 自定义评价函数
+def metrics_pre(y_true, y_pred):
+    Y_true = tf.one_hot(tf.dtypes.cast(y_true,dtype=tf.int32),vocabulary_size)
+    print("\033[0;35my_true:\n",tf.shape(Y_true),"\ny_pred:\n",tf.shape(y_pred))
+    return keras.metrics.categorical_accuracy(Y_true,y_pred) 
 
 model = keras.Sequential()
-
-model.add(LookupEmbedding(vocabulary_size,embedding_size))
+model.add(LookupEmbedding(vocabulary_size,embedding_size,input_shape=(1,)))
 model.add(layers.Dense(vocabulary_size,activation='softmax'))
-model.compile(optimizer='adam',loss=categorical_crossentropy,metrics=['accuracy'])
+model.compile(optimizer='SGD',loss=categorical_crossentropy,metrics=[metrics_pre])
 model.summary()
 
 tensorboard = TensorBoard(
@@ -205,7 +208,8 @@ tensorboard = TensorBoard(
 history = model.fit_generator(
     generator = one_hot_generator(),
     steps_per_epoch=batch_size,
-    epochs=vocabulary_size//batch_size,
+    epochs=2,
+    validation_data=(x_valid,y_valid),
     callbacks=[tensorboard])
 
 emb_layer = model.layers[0]
