@@ -1,30 +1,20 @@
-from __future__ import absolute_import, division, print_function, unicode_literals
 import os
 import sys
 import argparse
 import collections
-import numpy as np
 import random
 import math
 import time
 
+import numpy as np
+import matplotlib.pyplot as plt
 import tensorflow as tf
-
-from tensorflow import keras
-from tensorflow.keras import layers
-
-from tensorflow.keras.callbacks import TensorBoard
 
 start_time = time.strftime("%Y%m%d-%H:%M:%S", time.localtime())
 print('start_time', start_time)
 
 current_path = os.path.dirname(os.path.realpath(sys.argv[0]))
 parser = argparse.ArgumentParser()
-parser.add_argument(
-    '--log_dir',
-    type=str,
-    default=os.path.join(current_path,'log'),
-    help='The log directory for TensorBoard summaries.')
 parser.add_argument(
     '--output',
     type=str,
@@ -33,9 +23,6 @@ parser.add_argument(
 FLAGS,unparsed = parser.parse_known_args()
 
 print("FLAGS",FLAGS)
-#如果没有，则为TensorBoard变量or输出创建目录
-if not os.path.exists(FLAGS.log_dir):
-    os.makedirs(FLAGS.log_dir)
 if not os.path.exists(FLAGS.output):
     os.makedirs(FLAGS.output)
 
@@ -51,7 +38,7 @@ vocabulary = read_data(os.path.join(current_path,'input','text8'))
 print("\033[0;32mData size",len(vocabulary),'Data_type',type(vocabulary),'Data[0:5]',vocabulary[0:5],"\033[0m")
 
 #Step 2: 构建字典并用UNK令牌替换罕见的单词
-vocabulary_size = 50000
+vocabulary_size = 10000
 
 def build_dataset(words, n_words):
     """将原始输入处理为数据集。"""
@@ -104,7 +91,7 @@ def generate_batch(batch_size,num_skips,skip_window):
         words_to_use = random.sample(context_words,num_skips) # 从窗口中上下文索引随机获取num_skips个窗口中字或词的索引值
         for j, context_word in enumerate(words_to_use):
             batch[i * num_skips + j] = buffer[skip_window] # 将窗口中中间索引值赋值给batch
-            labels[i * num_skips + j, 0] = buffer[context_word] # 窗口中中间字或词的索引的上下文赋值给labels
+            labels[i * num_skips + j,0] = buffer[context_word] # 窗口中中间字或词的索引的上下文赋值给labels
         if data_index == len(data):
             buffer.extend(data[0:span])
             data_index = span
@@ -134,83 +121,142 @@ num_sampled = 64 # 要抽样的负面例子数量。
 valid_window = 200 # 只选择分布头部的开发样本。
 x_valid, y_valid = generate_batch(valid_window,num_skips,skip_window)
 data_index = 0
+EPOCHS = 100
 
-def one_hot_generator():
-    while True:
-        x_train, y_train = generate_batch(batch_size,num_skips,skip_window)
-        '''
-        for i in range(4):
-            print("\033[0;33m",x_train[i], 
-                reverse_dictionary[x_train[i]],
-                "\033[0m", '->',y_train[i,0], 
-                reverse_dictionary[y_train[i,0]])
-        '''
-        # y_train = tf.one_hot(Y_train,vocabulary_size).numpy() 
-        yield(x_train,y_train)
+X_train, Y_train = [], []
+for epoch in range(EPOCHS):
+    x, y = generate_batch(batch_size,num_skips,skip_window)
+    X_train.append(x)
+    Y_train.append(y)
+
+dataset = tf.data.Dataset.from_tensor_slices((X_train,Y_train))
+
+def transale_label(features,labels):
+    #labels = tf.one_hot(indices=labels,depth=vocabulary_size,dtype=tf.float32)
+    labels = tf.dtypes.cast(labels,dtype=tf.float32)
+    return features, labels
+train_dataset = dataset.map(transale_label)
 
 # 自定义embedding层
-class LookupEmbedding(layers.Layer):
-    
-    def __init__(self,input_dim,output_dim,**kwargs):
+class LookupEmbedding(tf.keras.layers.Layer):
+    def __init__(self,output_dim,**kwargs):
         super(LookupEmbedding,self).__init__(**kwargs)
-        self.input_dim = input_dim
         self.output_dim = output_dim
         self.activation = tf.nn.relu
-    
     def build(self,input_shape):
         self.kernel = tf.Variable(
             tf.random.uniform(
-                shape=(self.input_dim,self.output_dim),
+                shape=(vocabulary_size,self.output_dim),
                 minval=-1.0,
                 maxval=1.0))
-        # super(LookupEmbedding,self).build((self.input_dim,self.output_dim))
-    
     def call(self,x):
         x = tf.dtypes.cast(x,dtype=tf.int32)
         #print("\n\033[0;32mx_shape:\033[0m",tf.shape(x),"\n\033[0;32mdata_index:\033[0m",data_index)
         embedding = tf.nn.embedding_lookup(params=self.kernel,ids=x) 
         return self.activation(features=embedding)
-    
     def compute_output_shape(self,input_shape):
-        return (self.input_dim,self.output_dim)
-    
+        return (vocabulary_size,self.output_dim)
     def get_config(self):
-        config = {
-            'activation': self.activation}
+        config = {'activation': self.activation}
         base_config = super(Activation, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
 
+class DenseLayer(tf.keras.layers.Layer):
+    def __init__(self,output_dim,activation=False,**kwargs):
+        super(DenseLayer,self).__init__(**kwargs)
+        self.output_dim = output_dim
+        self.activation = activation
+    def build(self,input_shape):
+        self.kernel = tf.Variable(
+            tf.random.uniform(
+                shape=(input_shape[1],self.output_dim),
+                minval=-1,
+                maxval=1,
+                seed=234),name="kernel")
+        self.biases = tf.Variable(
+            tf.zeros(
+                shape=(1,self.output_dim)),name="bias")
+    def call(self,x):
+        matmul = tf.linalg.matmul(x,self.kernel) + self.biases
+        if self.activation:
+            return self.activation(matmul)
+        else:
+            return matmul
+    def compute_output_shape(self,input_shape):
+        return (input_shape[1],self.output_dim)
+    def get_config(self):
+        config = {}
+        if self.activation:config = {'activation':self.activation}
+        base_config = super(Activation, self).get_config()
+        return dict(list(base_config.items()) + list(config.items())) 
+
+class CreateModel(tf.keras.Model):
+    def __init__(self):
+        super(CreateModel,self).__init__()
+        self.lueb = LookupEmbedding(embedding_size,input_shape=(1,))
+        self.d1 = DenseLayer(1,activation=tf.nn.sigmoid)
+    def call(self, x):
+        x = self.lueb(x)
+        return self.d1(x)
+
 # 自定义loss函数
-def categorical_crossentropy(y_true, y_pred):
-    Y_true = tf.one_hot(tf.dtypes.cast(y_true,dtype=tf.int32),vocabulary_size)
-    print("\033[0;33mY_true:\n",tf.shape(Y_true),"\ny_pred:\n",tf.shape(y_pred))
-    matmul = tf.linalg.matmul(Y_true,tf.math.log(y_pred),transpose_b=True)
-    return -tf.math.reduce_mean(matmul)
+def loss_fn(y_true, y_pred):
+    sub = tf.math.subtract(y_pred, y_true)
+    losses = tf.math.abs(sub)
+    #losses = tf.math.sqrt(losses)
+    #tf.print(f"\033[1;35mlosses:\033[0m{losses}")
+    loss = tf.math.reduce_mean(losses)
+    return loss
     
-# 自定义评价函数
-def metrics_pre(y_true, y_pred):
-    Y_true = tf.one_hot(tf.dtypes.cast(y_true,dtype=tf.int32),vocabulary_size)
-    print("\033[0;35my_true:\n",tf.shape(Y_true),"\ny_pred:\n",tf.shape(y_pred))
-    return keras.metrics.categorical_accuracy(Y_true,y_pred) 
+accuracy_train = tf.keras.metrics.SparseCategoricalAccuracy(name='accuracy_train')
+model = CreateModel()
+optimizer = tf.keras.optimizers.Adam(learning_rate=0.01)
 
-model = keras.Sequential()
-model.add(LookupEmbedding(vocabulary_size,embedding_size,input_shape=(1,)))
-model.add(layers.Dense(vocabulary_size,activation='softmax'))
-model.compile(optimizer='SGD',loss=categorical_crossentropy,metrics=[metrics_pre])
-model.summary()
 
-tensorboard = TensorBoard(
-    log_dir=os.path.join(FLAGS.log_dir,f"{start_time}"),
-    histogram_freq=1,
-    write_graph=True,
-    write_images=True)
+#@tf.function
+def step_train(inputs,targets):
+    with tf.GradientTape() as tape:
+        y_pred = model(inputs) 
+        loss = loss_fn(targets,y_pred)
+    grads = tape.gradient(loss,model.trainable_variables)
+    optimizer.apply_gradients(zip(grads,model.trainable_variables))
+    accuracy_train(targets,y_pred)
+    return loss
 
-history = model.fit_generator(
-    generator = one_hot_generator(),
-    steps_per_epoch=batch_size,
-    epochs=2,
-    validation_data=(x_valid,y_valid),
-    callbacks=[tensorboard])
+train_loss_results, train_accuracy_results = [], []
+test_loss_results, test_accuracy_results = [], []
+num_epochs = 101
+
+for epoch in range(num_epochs):
+    total_loss = 0.0
+    num_batchs = 0
+    for x, y in train_dataset:
+        total_loss += step_train(x, y)
+        num_batchs += 1
+    train_loss_results.append(total_loss/num_batchs)
+    train_accuracy_results.append(accuracy_train.result())
+    if epoch % 1 == 0:
+        print(
+            f"\033[1;35mEpoch:\033[0m{epoch}",
+            f"\033[1;35mLoss:\033[0m{train_loss_results[-1]}",
+            f"\033[1;35mAccuracy:\033[0m{train_accuracy_results[-1]}")
+
+fig, axes = plt.subplots(2, sharex=True, figsize=(12, 8))
+fig.suptitle('Training Metrics')
+axes[0].set_ylabel("Loss", fontsize=14)
+axes[0].plot(
+    train_loss_results, 'r',
+    test_loss_results, 'b')
+axes[0].legend(['train_loss', 'test_loss'])
+
+axes[1].set_ylabel("Accuracy", fontsize=14)
+axes[1].set_xlabel("Epoch", fontsize=14)
+axes[1].plot(
+    train_accuracy_results, 'r',
+    test_accuracy_results, 'b')
+axes[1].legend(['train_accuracy', 'test_accuracy'])
+
+plt.savefig(os.path.join(FLAGS.output,"train_steps.png"))
 
 emb_layer = model.layers[0]
 weights = emb_layer.get_weights()[0]
