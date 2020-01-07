@@ -133,9 +133,19 @@ dataset = tf.data.Dataset.from_tensor_slices((X_train,Y_train))
 
 def transale_label(features,labels):
     #labels = tf.one_hot(indices=labels,depth=vocabulary_size,dtype=tf.float32)
-    labels = tf.dtypes.cast(labels,dtype=tf.float32)
+    labels = tf.dtypes.cast(labels,dtype=tf.int64)
     return features, labels
 train_dataset = dataset.map(transale_label)
+
+for x, y in train_dataset:
+    sampled_values = tf.random.log_uniform_candidate_sampler(
+        true_classes=y,
+        num_true=1,
+        num_sampled=num_sampled,
+        unique=True,
+        range_max=vocabulary_size,
+        seed=None)
+    tf.print(f"\033[1;35mSampled_values:\033[0m{sampled_values}")
 
 # 自定义embedding层
 class LookupEmbedding(tf.keras.layers.Layer):
