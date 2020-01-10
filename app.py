@@ -102,154 +102,124 @@ def generate_batch(batch_size,num_skips,skip_window):
     data_index = (data_index + len(data) - span) % len(data)
     return batch, labels
 
+'''
 batch, labels = generate_batch(batch_size=8, num_skips=2, skip_window=1)
 for i in range(8):
     print("\033[0;33m",batch[i], reverse_dictionary[batch[i]],"\033[0m", '->',labels[i,0], reverse_dictionary[labels[i,0]])
+'''
+
 
 # Step 4: 创建和训练skip-gram model
 batch_size = 128
 embedding_size = 128 # 嵌入向量的维数。
 skip_window = 1 # 左右要考虑多少个单词。
 num_skips = 2 # 重复使用输入生成标签的次数。
-num_sampled = 64 # 要抽样的负面例子数量。
 
-"""
-我们选择一个随机验证集来对最近邻居进行抽样。
-在这里，我们将验证样本限制为具有低数字ID的单词，按构造也是最常见的。
-这3个变量仅用于显示模型精度，它们不影响计算。
-"""
-valid_window = 200 # 只选择分布头部的开发样本。
-x_valid, y_valid = generate_batch(valid_window,num_skips,skip_window)
-data_index = 0
-EPOCHS = 100
+class InputEmbedding(object):
+    def __init__(self):
+        self.kernels = tf.Variable(
+            tf.random.uniform(
+                shape=[vocabulary_size,embedding_size],
+                minval=-1.0,
+                maxval=1.0), name='input_kernels')
+    def __call__(self, x):
+        return tf.nn.embedding_lookup(params=self.kernels, ids=x)
 
-X_train, Y_train = [], []
-for epoch in range(EPOCHS):
-    x, y = generate_batch(batch_size,num_skips,skip_window)
-    X_train.append(x)
-    Y_train.append(y)
+class LabelEmbedding(object):
+    def __init__(self):
+        self.kernels = tf.Variable(
+            tf.random.truncated_normal(
+                shape=[vocabulary_size,embedding_size],
+                stddev=1.0/math.sqrt(embedding_size)), name='label_kernels')
+        self.biases = tf.Variable(
+            tf.zeros(shape=[vocabulary_size]), name='label_biases')
+    def __call__(self, x):
+        embeddings = tf.nn.embedding_lookup(params=self.kernels, ids=x)
+        biases = tf.nn.embedding_lookup(params=self.biases, ids=x)
+        return embeddings, biases
+        
 
-dataset = tf.data.Dataset.from_tensor_slices((X_train,Y_train))
-
-def transale_label(features,labels):
-    #labels = tf.one_hot(indices=labels,depth=vocabulary_size,dtype=tf.float32)
-    labels = tf.dtypes.cast(labels,dtype=tf.int64)
-    return features, labels
-train_dataset = dataset.map(transale_label)
-
-for x, y in train_dataset:
+def compute_sampled_logits(y_true, y_pred, num_true=1, num_sampled=64):
+     
+    y_true = tf.dtypes.cast(y_true,dtype=tf.int64)
+    y_true_flat = tf.reshape(y_true, [-1])
+    
     sampled_values = tf.random.log_uniform_candidate_sampler(
-        true_classes=y,
-        num_true=1,
+        true_classes=y_true,
+        num_true=num_true,
         num_sampled=num_sampled,
         unique=True,
         range_max=vocabulary_size,
         seed=None)
-    tf.print(f"\033[1;35mSampled_values:\033[0m{sampled_values}")
+    sampled, true_expected_count, sampled_expected_count = (tf.stop_gradient(s) for s in sampled_values)
+    sampled = tf.dtypes.cast(sampled,dtype=tf.int64)
 
-# 自定义embedding层
-class LookupEmbedding(tf.keras.layers.Layer):
-    def __init__(self,output_dim,**kwargs):
-        super(LookupEmbedding,self).__init__(**kwargs)
-        self.output_dim = output_dim
-        self.activation = tf.nn.relu
-    def build(self,input_shape):
-        self.kernel = tf.Variable(
-            tf.random.uniform(
-                shape=(vocabulary_size,self.output_dim),
-                minval=-1.0,
-                maxval=1.0))
-    def call(self,x):
-        x = tf.dtypes.cast(x,dtype=tf.int32)
-        #print("\n\033[0;32mx_shape:\033[0m",tf.shape(x),"\n\033[0;32mdata_index:\033[0m",data_index)
-        embedding = tf.nn.embedding_lookup(params=self.kernel,ids=x) 
-        return self.activation(features=embedding)
-    def compute_output_shape(self,input_shape):
-        return (vocabulary_size,self.output_dim)
-    def get_config(self):
-        config = {'activation': self.activation}
-        base_config = super(Activation, self).get_config()
-        return dict(list(base_config.items()) + list(config.items()))
-
-class DenseLayer(tf.keras.layers.Layer):
-    def __init__(self,output_dim,activation=False,**kwargs):
-        super(DenseLayer,self).__init__(**kwargs)
-        self.output_dim = output_dim
-        self.activation = activation
-    def build(self,input_shape):
-        self.kernel = tf.Variable(
-            tf.random.uniform(
-                shape=(input_shape[1],self.output_dim),
-                minval=-1,
-                maxval=1,
-                seed=234),name="kernel")
-        self.biases = tf.Variable(
-            tf.zeros(
-                shape=(1,self.output_dim)),name="bias")
-    def call(self,x):
-        matmul = tf.linalg.matmul(x,self.kernel) + self.biases
-        if self.activation:
-            return self.activation(matmul)
-        else:
-            return matmul
-    def compute_output_shape(self,input_shape):
-        return (input_shape[1],self.output_dim)
-    def get_config(self):
-        config = {}
-        if self.activation:config = {'activation':self.activation}
-        base_config = super(Activation, self).get_config()
-        return dict(list(base_config.items()) + list(config.items())) 
-
-class CreateModel(tf.keras.Model):
-    def __init__(self):
-        super(CreateModel,self).__init__()
-        self.lueb = LookupEmbedding(embedding_size,input_shape=(1,))
-        self.d1 = DenseLayer(1,activation=tf.nn.sigmoid)
-    def call(self, x):
-        x = self.lueb(x)
-        return self.d1(x)
-
-# 自定义loss函数
-def loss_fn(y_true, y_pred):
-    sub = tf.math.subtract(y_pred, y_true)
-    losses = tf.math.abs(sub)
-    #losses = tf.math.sqrt(losses)
-    #tf.print(f"\033[1;35mlosses:\033[0m{losses}")
-    loss = tf.math.reduce_mean(losses)
-    return loss
+    all_ids = tf.concat([y_true_flat, sampled], 0)
+    all_w, all_b = label_model(all_ids)
     
-accuracy_train = tf.keras.metrics.SparseCategoricalAccuracy(name='accuracy_train')
-model = CreateModel()
-optimizer = tf.keras.optimizers.Adam(learning_rate=0.01)
+    true_w_shape = tf.stack([tf.shape(y_true_flat)[0], -1])
+    true_w = tf.slice(input_=all_w, begin=[0,0], size=true_w_shape)
+    
+    sampled_w_shape = tf.stack([tf.shape(y_true_flat)[0], 0])
+    sampled_w = tf.slice(input_=all_w, begin=sampled_w_shape, size=[-1, -1])
+    sampled_logits = tf.linalg.matmul(y_pred, sampled_w, transpose_b=True)
+    
+    true_b = tf.slice(input_=all_b, begin=[0], size=tf.shape(y_true_flat))
+    sampled_b = tf.slice(input_=all_b, begin=tf.shape(y_true_flat), size=[-1])
 
+    dim = tf.shape(true_w)[1:2]
+    new_true_w_shape = tf.concat([[-1, num_true], dim], 0)
+    new_inputs = tf.expand_dims(y_pred, axis=1)
+    row_wise_dots = tf.math.multiply(new_inputs, tf.reshape(true_w, new_true_w_shape))
 
-#@tf.function
+    dots_as_matrix = tf.reshape(row_wise_dots, shape=tf.concat([[-1],dim],0))
+    true_logits = tf.reshape(tf.math.reduce_sum(input_tensor=dots_as_matrix, axis=1), shape=[-1, num_true])
+    true_b = tf.reshape(true_b, shape=[-1, num_true])
+    true_logits += true_b
+    sampled_logits += sampled_b
+    
+    true_logits -= tf.math.log(true_expected_count)
+    sampled_logits -= tf.math.log(sampled_expected_count)
+    out_logits = tf.concat([true_logits, sampled_logits], 1)
+
+    out_labels = tf.concat([
+        tf.ones_like(true_logits) / num_true,
+        tf.zeros_like(sampled_logits)
+    ], 1)
+
+    return out_logits, out_labels
+    
+input_model = InputEmbedding()
+label_model = LabelEmbedding()
+optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
+
+@tf.function
 def step_train(inputs,targets):
     with tf.GradientTape() as tape:
-        y_pred = model(inputs) 
-        loss = loss_fn(targets,y_pred)
-    grads = tape.gradient(loss,model.trainable_variables)
-    optimizer.apply_gradients(zip(grads,model.trainable_variables))
-    accuracy_train(targets,y_pred)
-    return loss
+        y_pred = input_model(inputs) 
+        logits, labels = compute_sampled_logits(targets,y_pred)
+        sampled_losses = tf.nn.sigmoid_cross_entropy_with_logits(labels=labels, logits=logits)
+        loss = tf.math.reduce_sum(sampled_losses, axis=1)
+    model_variables = [input_model.kernels, label_model.kernels, label_model.biases]
+    grads = tape.gradient(loss, model_variables)
+    optimizer.apply_gradients(zip(grads, model_variables))
+    return tf.math.reduce_mean(loss)
 
 train_loss_results, train_accuracy_results = [], []
 test_loss_results, test_accuracy_results = [], []
-num_epochs = 101
+num_epochs = 100001
 
-for epoch in range(num_epochs):
-    total_loss = 0.0
-    num_batchs = 0
-    for x, y in train_dataset:
-        total_loss += step_train(x, y)
-        num_batchs += 1
-    train_loss_results.append(total_loss/num_batchs)
-    train_accuracy_results.append(accuracy_train.result())
-    if epoch % 1 == 0:
-        print(
-            f"\033[1;35mEpoch:\033[0m{epoch}",
-            f"\033[1;35mLoss:\033[0m{train_loss_results[-1]}",
-            f"\033[1;35mAccuracy:\033[0m{train_accuracy_results[-1]}")
+average_loss = 0
+for step in range(num_epochs):
+    x, y = generate_batch(batch_size,num_skips,skip_window)
+    y = tf.dtypes.cast(y,dtype=tf.float32)
+    loss = step_train(x, y)  
+    average_loss += loss
+    if step % 100 == 0 and step > 0:
+        average_loss /= 100
+        train_loss_results.append(average_loss)
+        print(f"\033[1;35mStep:\033[0m{step}",f"\033[1;36mAverage_Loss:\033[0m{average_loss}")
+        average_loss = 0
 
 fig, axes = plt.subplots(2, sharex=True, figsize=(12, 8))
 fig.suptitle('Training Metrics')
@@ -268,8 +238,10 @@ axes[1].legend(['train_accuracy', 'test_accuracy'])
 
 plt.savefig(os.path.join(FLAGS.output,"train_steps.png"))
 
-emb_layer = model.layers[0]
-weights = emb_layer.get_weights()[0]
+weights = input_model.kernels
+norm = tf.math.sqrt(tf.math.reduce_sum(input_tensor=tf.math.square(weights), axis=1, keepdims=True))
+normalized_weights = weights/norm
+print(f"\033[1;35mnormalized_weights shape:\033[0m{normalized_weights.shape}")
 
 # 为embeddings编写相应的标签。
 with open(os.path.join(FLAGS.output,'meta.tsv'), 'w') as f:
@@ -277,5 +249,8 @@ with open(os.path.join(FLAGS.output,'meta.tsv'), 'w') as f:
         f.write(reverse_dictionary[i] + '\n')
     
 with open(os.path.join(FLAGS.output,'vecs.tsv'), 'w') as f:
-    for value in weights:
+    for value in normalized_weights.numpy():
         f.write('\t'.join([str(x) for x in value]) + "\n")
+
+end_time = time.strftime("%Y%m%d-%H:%M:%S", time.localtime())
+print(f"\033[1;35mStart_time:\033[0m{start_time}\n\033[1;35mEnd_time:\033[0m{end_time}")
