@@ -111,7 +111,7 @@ for i in range(8):
 
 # Step 4: 创建和训练skip-gram model
 batch_size = 128
-embedding_size = 128 # 嵌入向量的维数。
+embedding_size = 300 # 嵌入向量的维数。
 skip_window = 1 # 左右要考虑多少个单词。
 num_skips = 2 # 重复使用输入生成标签的次数。
 
@@ -207,16 +207,17 @@ def step_train(inputs,targets):
 
 train_loss_results, train_accuracy_results = [], []
 test_loss_results, test_accuracy_results = [], []
-num_epochs = 100001
+num_epochs = 150001
 
 average_loss = 0
+write_step = 1000
 for step in range(num_epochs):
     x, y = generate_batch(batch_size,num_skips,skip_window)
     y = tf.dtypes.cast(y,dtype=tf.float32)
     loss = step_train(x, y)  
     average_loss += loss
-    if step % 100 == 0 and step > 0:
-        average_loss /= 100
+    if step % write_step == 0 and step > 0:
+        average_loss /= write_step
         train_loss_results.append(average_loss)
         print(f"\033[1;35mStep:\033[0m{step}",f"\033[1;36mAverage_Loss:\033[0m{average_loss}")
         average_loss = 0
